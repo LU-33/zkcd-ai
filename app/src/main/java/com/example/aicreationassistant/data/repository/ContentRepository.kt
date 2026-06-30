@@ -105,6 +105,39 @@ class ContentRepository(
         historyDao.deleteAll()
     }
 
+    // ==================== 更新 ====================
+
+    suspend fun updateContent(item: ContentItem) {
+        val result = cryptoManager.encrypt(item.content)
+        if (item.isFavorite) {
+            favoriteDao.insert(
+                FavoriteEntity(
+                    id = item.id,
+                    encryptedContent = result.ciphertext,
+                    contentType = item.contentType.key,
+                    creationType = item.creationType.key,
+                    originalPrompt = item.originalPrompt,
+                    iv = result.iv,
+                    title = item.title,
+                    imageUri = item.imageUri
+                )
+            )
+        } else {
+            historyDao.insert(
+                HistoryEntity(
+                    id = item.id,
+                    encryptedContent = result.ciphertext,
+                    contentType = item.contentType.key,
+                    creationType = item.creationType.key,
+                    originalPrompt = item.originalPrompt,
+                    iv = result.iv,
+                    title = item.title,
+                    imageUri = item.imageUri
+                )
+            )
+        }
+    }
+
     // ==================== 映射 ====================
 
     private fun FavoriteEntity.toContentItem(): ContentItem? {

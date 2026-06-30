@@ -10,6 +10,7 @@ object NavRoutes {
 
     // Full screen destinations
     const val TEXT_CREATION = "text_creation/{creationType}"
+    const val PRODUCT_DESC = "product_desc"
     const val IMAGE_DESC = "image_desc"
     const val IMAGE_EDIT = "image_edit/{sourceUri}"
     const val DETAIL = "detail/{contentId}"

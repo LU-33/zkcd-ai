@@ -25,7 +25,8 @@ import com.example.aicreationassistant.domain.model.CreationType
 @Composable
 fun HomeScreen(
     onCreationCardTap: (CreationType) -> Unit,
-    onImageDescTap: () -> Unit
+    onImageDescTap: () -> Unit,
+    onProductDescTap: () -> Unit
 ) {
     Scaffold(
         topBar = {
@@ -86,7 +87,7 @@ fun HomeScreen(
                     Color(0xFF0EA5E9),
                     Color(0xFF38BDF8)
                 ),
-                onClick = { onCreationCardTap(CreationType.PRODUCT_DESC) }
+                onClick = onProductDescTap
             )
 
             CreationCard(

@@ -2,5 +2,6 @@
 <paths>
     <cache-path name="shared_images" path="shared/" />
     <cache-path name="ucrop" path="ucrop/" />
+    <cache-path name="camera_photos" path="camera/" />
     <files-path name="images" path="images/" />
 </paths>

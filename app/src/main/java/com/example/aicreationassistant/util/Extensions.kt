@@ -11,26 +11,55 @@ import android.util.Base64
 import java.io.ByteArrayOutputStream
 
 /**
- * 获取图片元数据信息（用于两段式图像描述）
+ * 获取图片元数据信息（用于两段式图像描述 / AI帮写）
+ * 增强版：从文件名中解析有意义的词语，帮助 AI 在没有视觉能力的情况下尽可能推断图片内容
  */
 fun Uri.getImageInfo(context: Context): String {
     val info = StringBuilder()
+    val fileName = getFileName(context)
 
     // 文件名
-    val fileName = getFileName(context)
     info.append("文件名：$fileName\n")
+
+    // 从文件名中提取可能的关键词（分割符：_-、空格、中文边界）
+    val nameWithoutExt = fileName.substringBeforeLast(".")
+    val keywords = nameWithoutExt
+        .replace(Regex("[_\\-\\s]+"), " ")
+        .split(" ")
+        .filter { it.length >= 2 && !it.matches(Regex("^(IMG|DSC|PHOTO|PIC|IMG_|DSC_|Screenshot|截图|微信).*", RegexOption.IGNORE_CASE)) }
+    if (keywords.isNotEmpty()) {
+        info.append("文件名关键词：${keywords.joinToString("、")}\n")
+    }
 
     // 文件大小
     context.contentResolver.openInputStream(this)?.use { stream ->
         val size = stream.available()
-        info.append("文件大小：${size / 1024}KB\n")
+        val kb = size / 1024
+        info.append("文件大小：${kb}KB")
+        if (kb > 2000) info.append("（高清大图，可能为专业拍摄）")
+        else if (kb < 100) info.append("（小文件，可能为截图或压缩图）")
+        info.append("\n")
     }
 
-    // 图片尺寸
+    // 图片尺寸 + 比例解读
     val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     context.contentResolver.openInputStream(this)?.use { stream ->
         BitmapFactory.decodeStream(stream, null, options)
-        info.append("尺寸：${options.outWidth}×${options.outHeight}\n")
+        val w = options.outWidth
+        val h = options.outHeight
+        val ratio = when {
+            w > 0 && h > 0 -> {
+                val r = w.toFloat() / h.toFloat()
+                when {
+                    r > 1.5f -> "横向宽图（可能是横幅/banner）"
+                    r < 0.67f -> "竖向长图（可能是手机截图或竖版海报）"
+                    r in 0.9f..1.1f -> "正方形（可能是社交媒体图片或商品主图）"
+                    else -> "接近${if (r > 1f) "横向" else "竖向"}构图"
+                }
+            }
+            else -> "未知比例"
+        }
+        info.append("尺寸：${w}×${h}（${ratio}）\n")
         info.append("格式：${options.outMimeType ?: "未知"}")
     }
 
@@ -153,6 +182,23 @@ fun Uri.getFileName(context: Context): String {
         }
     }
     return name
+}
+
+/**
+ * 从生成内容中自动提取标题 — 取第一句（≤maxLength 字）
+ * 去除 markdown 标题标记、首行空白、多行等
+ */
+fun String.extractTitle(maxLength: Int = 25): String {
+    val cleaned = this
+        .replace(Regex("^#{1,3}\\s*"), "")   // 去掉 markdown ## ###
+        .replace(Regex("^[*•\\-]\\s*"), "")   // 去掉无序列表标记
+        .trim()
+    val firstLine = cleaned.lines().firstOrNull { it.isNotBlank() } ?: cleaned
+    // 取第一句（以句号、感叹号、问号、换行结束）
+    val sentence = firstLine
+        .replace(Regex("[。！？\\n].*"), "")
+        .trim()
+    return if (sentence.length <= maxLength) sentence else sentence.take(maxLength - 1) + "…"
 }
 
 /**

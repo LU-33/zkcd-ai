@@ -6,6 +6,7 @@ import com.example.aicreationassistant.data.local.AppDatabase
 import com.example.aicreationassistant.data.remote.DeepSeekApi
 import com.example.aicreationassistant.data.repository.ContentRepository
 import com.example.aicreationassistant.data.repository.DeepSeekRepository
+import com.example.aicreationassistant.data.repository.QwenVLRepository
 import com.example.aicreationassistant.security.CryptoManager
 import com.example.aicreationassistant.util.Constants
 import com.example.aicreationassistant.util.NetworkMonitor
@@ -57,9 +58,26 @@ class ServiceLocator(
         retrofit.create(DeepSeekApi::class.java)
     }
 
+    // Qwen VL Retrofit（复用 DeepSeekApi 接口，不同 base URL）
+    private val qwenRetrofit: Retrofit by lazy {
+        Retrofit.Builder()
+            .baseUrl(Constants.QWEN_VL_BASE_URL)
+            .client(okHttpClient)
+            .addConverterFactory(GsonConverterFactory.create(gson))
+            .build()
+    }
+
+    val qwenVLApi: DeepSeekApi by lazy {
+        qwenRetrofit.create(DeepSeekApi::class.java)
+    }
+
     // Repositories
     val deepSeekRepository: DeepSeekRepository by lazy {
         DeepSeekRepository(deepSeekApi, apiKey)
+    }
+
+    val qwenVLRepository: QwenVLRepository by lazy {
+        QwenVLRepository(qwenVLApi, Constants.QWEN_VL_API_KEY, Constants.QWEN_VL_MODEL)
     }
 
     // Database

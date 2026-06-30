@@ -21,7 +21,12 @@ data class DetailState(
     val isMarkdownPreview: Boolean = false,
     val isLoading: Boolean = true,
     val isFavorite: Boolean = false,
-    val deleted: Boolean = false
+    val deleted: Boolean = false,
+    val isEditing: Boolean = false,
+    val editingContent: String = "",
+    val isSaving: Boolean = false,
+    val isEditingTitle: Boolean = false,
+    val editingTitle: String = ""
 )
 
 class DetailViewModel(
@@ -103,6 +108,94 @@ class DetailViewModel(
             putExtra(Intent.EXTRA_TEXT, content)
         }
         context.startActivity(Intent.createChooser(intent, "分享到"))
+    }
+
+    fun startEditing() {
+        val content = _state.value.contentItem?.content ?: return
+        _state.update { it.copy(isEditing = true, editingContent = content) }
+    }
+
+    fun updateEditingContent(text: String) {
+        _state.update { it.copy(editingContent = text) }
+    }
+
+    fun cancelEditing() {
+        _state.update { it.copy(isEditing = false, editingContent = "") }
+    }
+
+    fun saveEdit() {
+        val item = _state.value.contentItem ?: return
+        val newContent = _state.value.editingContent.trim()
+        if (newContent.isBlank() || newContent == item.content) {
+            _state.update { it.copy(isEditing = false, editingContent = "") }
+            return
+        }
+
+        viewModelScope.launch {
+            _state.update { it.copy(isSaving = true) }
+            try {
+                val updatedItem = item.copy(content = newContent)
+                contentRepo.updateContent(updatedItem)
+                _state.update {
+                    it.copy(
+                        contentItem = updatedItem,
+                        isEditing = false,
+                        editingContent = "",
+                        isSaving = false
+                    )
+                }
+            } catch (_: Exception) {
+                _state.update { it.copy(isSaving = false) }
+            }
+        }
+    }
+
+    // ==================== 标题编辑 ====================
+
+    fun startEditingTitle() {
+        val item = _state.value.contentItem ?: return
+        _state.update {
+            it.copy(
+                isEditingTitle = true,
+                editingTitle = item.title ?: item.creationType.displayName
+            )
+        }
+    }
+
+    fun updateEditingTitle(text: String) {
+        if (text.length <= 30) {
+            _state.update { it.copy(editingTitle = text) }
+        }
+    }
+
+    fun cancelEditingTitle() {
+        _state.update { it.copy(isEditingTitle = false, editingTitle = "") }
+    }
+
+    fun saveTitle() {
+        val item = _state.value.contentItem ?: return
+        val newTitle = _state.value.editingTitle.trim()
+        if (newTitle.isBlank() || newTitle == item.title) {
+            _state.update { it.copy(isEditingTitle = false, editingTitle = "") }
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                val updatedItem = item.copy(title = newTitle)
+                contentRepo.updateContent(updatedItem)
+                _state.update {
+                    it.copy(
+                        contentItem = updatedItem,
+                        title = newTitle,
+                        isEditingTitle = false,
+                        editingTitle = ""
+                    )
+                }
+            } catch (_: Exception) {
+                _state.update { it.copy(isEditingTitle = false) }
+            }
+        }
     }
 }
 

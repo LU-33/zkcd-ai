@@ -19,6 +19,7 @@ import com.example.aicreationassistant.ui.history.HistoryScreen
 import com.example.aicreationassistant.ui.home.HomeScreen
 import com.example.aicreationassistant.ui.imagedesc.ImageDescScreen
 import com.example.aicreationassistant.ui.imageedit.ImageEditScreen
+import com.example.aicreationassistant.ui.productdesc.ProductDescScreen
 import com.example.aicreationassistant.ui.textcreation.TextCreationScreen
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -73,11 +74,21 @@ fun AppNavGraph() {
                     },
                     onImageDescTap = {
                         navController.navigate(NavRoutes.IMAGE_DESC)
+                    },
+                    onProductDescTap = {
+                        navController.navigate(NavRoutes.PRODUCT_DESC)
                     }
                 )
             }
 
-            // 文本创作（朋友圈文案 / 商品描述）
+            // 商品描述（独立页面）
+            composable(NavRoutes.PRODUCT_DESC) {
+                ProductDescScreen(
+                    onNavigateBack = { navController.popBackStack() }
+                )
+            }
+
+            // 文本创作（朋友圈文案）
             composable(
                 route = NavRoutes.TEXT_CREATION,
                 arguments = listOf(

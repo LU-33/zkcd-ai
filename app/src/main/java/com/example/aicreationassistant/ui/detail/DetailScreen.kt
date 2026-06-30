@@ -2,9 +2,12 @@ package com.example.aicreationassistant.ui.detail
 
 import android.widget.Toast
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -16,7 +19,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import android.net.Uri
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.example.aicreationassistant.AiCreationApp
+import com.example.aicreationassistant.domain.model.CreationType
 import com.example.aicreationassistant.ui.components.FormatToggle
 import com.example.aicreationassistant.ui.components.MarkdownPreview
 import com.example.aicreationassistant.util.toRelativeTime
@@ -119,36 +126,178 @@ fun DetailScreen(
                         )
                     }
 
-                    // Original prompt
+                    // 标题区域（可编辑）
+                    if (state.isEditingTitle) {
+                        OutlinedTextField(
+                            value = state.editingTitle,
+                            onValueChange = { viewModel.updateEditingTitle(it) },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("标题") },
+                            singleLine = true,
+                            supportingText = { Text("${state.editingTitle.length}/30") }
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            TextButton(onClick = { viewModel.cancelEditingTitle() }) {
+                                Text("取消")
+                            }
+                            Button(onClick = { viewModel.saveTitle() }) {
+                                Text("保存")
+                            }
+                        }
+                    } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = state.title,
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.weight(1f)
+                            )
+                            IconButton(
+                                onClick = { viewModel.startEditingTitle() },
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Edit,
+                                    contentDescription = "编辑标题",
+                                    modifier = Modifier.size(18.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    // Original prompt（可展开/收起）
                     if (item.originalPrompt.isNotBlank()) {
+                        var promptExpanded by remember { mutableStateOf(false) }
+                        val isLong = item.originalPrompt.length > 80
                         Card(
                             colors = CardDefaults.cardColors(
                                 containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
                             )
                         ) {
                             Column(modifier = Modifier.padding(12.dp)) {
-                                Text(
-                                    "原始输入",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        "原始输入",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    if (isLong) {
+                                        TextButton(
+                                            onClick = { promptExpanded = !promptExpanded },
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                                        ) {
+                                            Text(
+                                                if (promptExpanded) "收起 ▲" else "展开 ▼",
+                                                style = MaterialTheme.typography.labelSmall
+                                            )
+                                        }
+                                    }
+                                }
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
                                     item.originalPrompt,
-                                    style = MaterialTheme.typography.bodyMedium
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    maxLines = if (promptExpanded) Int.MAX_VALUE else 3,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                                 )
                             }
                         }
                     }
 
-                    // Format toggle
-                    FormatToggle(
-                        isMarkdown = state.isMarkdownPreview,
-                        onToggle = { viewModel.toggleFormat() }
-                    )
+                    // 商品图片（仅商品描述）
+                    if (item.creationType == CreationType.PRODUCT_DESC && !item.imageUri.isNullOrBlank()) {
+                        val productImages = item.imageUri.split(",").filter { it.isNotBlank() }
+                        if (productImages.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                "商品图片",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                productImages.forEach { uriStr ->
+                                    AsyncImage(
+                                        model = ImageRequest.Builder(context)
+                                            .data(Uri.parse(uriStr))
+                                            .crossfade(true)
+                                            .build(),
+                                        contentDescription = "商品图片",
+                                        modifier = Modifier
+                                            .size(80.dp)
+                                            .clip(RoundedCornerShape(10.dp)),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Format toggle + Edit button
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        FormatToggle(
+                            isMarkdown = state.isMarkdownPreview,
+                            onToggle = { viewModel.toggleFormat() }
+                        )
+                        if (!state.isEditing) {
+                            TextButton(onClick = { viewModel.startEditing() }) {
+                                Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("编辑")
+                            }
+                        }
+                    }
 
                     // Content
-                    if (state.isMarkdownPreview) {
+                    if (state.isEditing) {
+                        OutlinedTextField(
+                            value = state.editingContent,
+                            onValueChange = { viewModel.updateEditingContent(it) },
+                            modifier = Modifier.fillMaxWidth(),
+                            minLines = 8,
+                            maxLines = 20,
+                            enabled = !state.isSaving
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (state.isSaving) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.dp
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                            }
+                            TextButton(onClick = { viewModel.cancelEditing() }) {
+                                Text("取消")
+                            }
+                            Button(onClick = { viewModel.saveEdit() }) {
+                                Text("保存修改")
+                            }
+                        }
+                    } else if (state.isMarkdownPreview) {
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             colors = CardDefaults.cardColors(
