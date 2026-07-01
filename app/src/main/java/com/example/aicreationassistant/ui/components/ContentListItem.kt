@@ -39,10 +39,13 @@ fun ContentListItem(
 
     var promptExpanded by remember { mutableStateOf(false) }
     val context = LocalContext.current
-    // 商品描述的多张图片
+    // 商品描述的多张图片 / 图片描述的图片
     val productImages = if (item.creationType == CreationType.PRODUCT_DESC && !item.imageUri.isNullOrBlank()) {
         item.imageUri.split(",").filter { it.isNotBlank() }
     } else emptyList()
+    val imageDescUri = if (item.creationType == CreationType.IMAGE_DESC && !item.imageUri.isNullOrBlank()) {
+        item.imageUri
+    } else null
 
     Card(
         modifier = modifier.fillMaxWidth(),
@@ -175,6 +178,23 @@ fun ContentListItem(
                         }
                     }
                 }
+            }
+
+            // === 图片描述的单张图片 ===
+            if (imageDescUri != null) {
+                Spacer(modifier = Modifier.height(8.dp))
+                AsyncImage(
+                    model = ImageRequest.Builder(context)
+                        .data(android.net.Uri.parse(imageDescUri))
+                        .crossfade(true)
+                        .build(),
+                    contentDescription = "图片",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(120.dp)
+                        .clip(RoundedCornerShape(10.dp)),
+                    contentScale = ContentScale.Crop
+                )
             }
 
             // === 内容预览 ===

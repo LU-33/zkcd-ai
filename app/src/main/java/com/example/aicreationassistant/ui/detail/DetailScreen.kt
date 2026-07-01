@@ -249,6 +249,21 @@ fun DetailScreen(
                         }
                     }
 
+                    // 图片描述的图片
+                    if (item.creationType == CreationType.IMAGE_DESC && !item.imageUri.isNullOrBlank()) {
+                        AsyncImage(
+                            model = ImageRequest.Builder(context)
+                                .data(Uri.parse(item.imageUri))
+                                .crossfade(true)
+                                .build(),
+                            contentDescription = "图片",
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp)),
+                            contentScale = ContentScale.FillWidth
+                        )
+                    }
+
                     // Format toggle + Edit button
                     Row(
                         modifier = Modifier.fillMaxWidth(),

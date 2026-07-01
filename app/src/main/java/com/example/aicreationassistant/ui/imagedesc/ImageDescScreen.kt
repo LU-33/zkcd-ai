@@ -40,6 +40,7 @@ fun ImageDescScreen(
     val viewModel: ImageDescViewModel = viewModel(
         factory = ImageDescViewModelFactory(
             deepSeekRepo = app.serviceLocator.deepSeekRepository,
+            qwenVLRepo = app.serviceLocator.qwenVLRepository,
             contentRepo = app.serviceLocator.contentRepository,
             networkMonitor = app.serviceLocator.networkMonitor
         )

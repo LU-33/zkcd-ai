@@ -10,6 +10,7 @@ import com.example.aicreationassistant.domain.model.ConversationTurn
 import com.example.aicreationassistant.domain.model.CreationType
 import com.example.aicreationassistant.data.repository.ContentRepository
 import com.example.aicreationassistant.data.repository.DeepSeekRepository
+import com.example.aicreationassistant.data.repository.QwenVLRepository
 import com.example.aicreationassistant.util.Constants
 import com.example.aicreationassistant.util.NetworkMonitor
 import com.example.aicreationassistant.util.extractTitle
@@ -23,8 +24,8 @@ import kotlinx.coroutines.launch
 data class ImageDescState(
     val selectedImageUri: Uri? = null,
     val imageFileName: String = "",
-    /** 图片元数据（首次提取后缓存，后续对话复用） */
-    val imageInfo: String = "",
+    /** Qwen VL 视觉分析结果（首次分析后缓存，后续对话复用） */
+    val qwenAnalysis: String = "",
     /** 底部输入栏文本 */
     val currentInput: String = "",
     /** 最新一条 AI 描述 */
@@ -49,6 +50,7 @@ data class ImageDescState(
 
 class ImageDescViewModel(
     private val deepSeekRepo: DeepSeekRepository,
+    private val qwenVLRepo: QwenVLRepository,
     private val contentRepo: ContentRepository,
     private val networkMonitor: NetworkMonitor
 ) : ViewModel() {
@@ -63,7 +65,7 @@ class ImageDescViewModel(
             it.copy(
                 selectedImageUri = uri,
                 imageFileName = fileName,
-                imageInfo = "",  // 重置，下次生成时重新提取
+                qwenAnalysis = "",  // 重置，下次生成时重新分析
                 hasGenerated = false
             )
         }
@@ -83,7 +85,7 @@ class ImageDescViewModel(
             it.copy(
                 selectedImageUri = uri,
                 imageFileName = fileName,
-                imageInfo = "",
+                qwenAnalysis = "",
                 conversation = emptyList(),
                 currentInput = "",
                 currentOutput = "",
@@ -112,7 +114,7 @@ class ImageDescViewModel(
         _state.update { it.copy(error = null) }
     }
 
-    // ==================== 核心：发送消息 ====================
+    // ==================== 核心：发送消息（Qwen VL → DeepSeek 两阶段） ====================
 
     fun sendMessage(context: Context) {
         val uri = _state.value.selectedImageUri
@@ -126,32 +128,48 @@ class ImageDescViewModel(
         }
 
         val input = _state.value.currentInput.trim()
+        val isFirstTime = _state.value.qwenAnalysis.isBlank()
 
         viewModelScope.launch {
             _state.update { it.copy(isLoading = true, error = null) }
 
             try {
-                // 首次提取图片元数据并缓存
-                val imageInfo = if (_state.value.imageInfo.isBlank()) {
-                    val info = uri.getImageInfo(context)
-                    _state.update { it.copy(imageInfo = info) }
-                    info
-                } else {
-                    _state.value.imageInfo
+                // === 阶段 1：Qwen VL 视觉分析（仅首次，后续复用缓存）===
+                if (isFirstTime) {
+                    _state.update { it.copy(error = null) }
+                    val analysisResult = qwenVLRepo.describeImage(
+                        context, uri,
+                        prompt = "请详细描述这张图片的内容：包括拍摄对象、场景、色彩、构图、氛围、以及任何值得注意的细节。用中文输出，200-400字。"
+                    )
+                    if (analysisResult.isSuccess) {
+                        val analysis = analysisResult.getOrThrow()
+                        _state.update { it.copy(qwenAnalysis = analysis) }
+                    } else {
+                        // Qwen VL 失败 → 降级为图片元数据
+                        val fallback = uri.getImageInfo(context)
+                        _state.update { it.copy(qwenAnalysis = fallback) }
+                    }
                 }
 
+                val qwenAnalysis = _state.value.qwenAnalysis
+
+                // === 阶段 2：DeepSeek 基于视觉分析生成文案 ===
                 val previousConversation = _state.value.conversation
                 val displayInput = input.ifBlank { "请描述这张图片" }
                 val userTurn = ConversationTurn(role = "user", content = displayInput)
-
-                // 乐观更新
                 _state.update {
                     it.copy(conversation = previousConversation + userTurn, currentInput = "")
                 }
 
-                deepSeekRepo.generateImageConversation(
-                    systemPrompt = Constants.SYSTEM_PROMPT_IMAGE_DESC,
-                    imageInfo = imageInfo,
+                val systemPrompt = buildString {
+                    append(Constants.SYSTEM_PROMPT_IMAGE_DESC)
+                    append("\n\n=== 图片 AI 视觉分析（由视觉模型生成）===\n")
+                    append(qwenAnalysis)
+                    append("\n\n请基于以上视觉分析结果，生成一段生动、详细的图片描述文案。")
+                }
+
+                deepSeekRepo.generateConversation(
+                    systemPrompt = systemPrompt,
                     history = previousConversation,
                     newUserMessage = displayInput
                 ).onSuccess { description ->
@@ -178,7 +196,7 @@ class ImageDescViewModel(
                 }
             } catch (e: Exception) {
                 _state.update {
-                    it.copy(isLoading = false, error = "图片处理失败: ${e.message}")
+                    it.copy(isLoading = false, error = "处理失败: ${e.message}")
                 }
             }
         }
