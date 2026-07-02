@@ -191,7 +191,7 @@ fun TextCreationScreen(
                     SectionHeader(
                         title = if (isSocial) "你想生成关于什么文案？" else "你想描述什么商品？"
                     )
-                    val displayTags = if (state.tagsExpanded) hotTags else hotTags.take(8)
+                    val displayTags = if (state.tagsExpanded) hotTags else hotTags.take(6)
                     FlowRow(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -204,7 +204,7 @@ fun TextCreationScreen(
                             )
                         }
                     }
-                    if (hotTags.size > 8) {
+                    if (hotTags.size > 7) {
                         TextButton(
                             onClick = { viewModel.toggleTagsExpanded() },
                             modifier = Modifier.align(Alignment.End)
@@ -517,7 +517,7 @@ private fun TagChip(label: String, onClick: () -> Unit) {
     ) {
         Text(
             text = label,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
             style = MaterialTheme.typography.labelMedium
         )
     }

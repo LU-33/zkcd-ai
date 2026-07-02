@@ -24,7 +24,4 @@ interface FavoriteDao {
 
     @Query("DELETE FROM favorites")
     suspend fun deleteAll()
-
-    @Query("SELECT EXISTS(SELECT 1 FROM favorites WHERE original_prompt = :prompt AND creation_type = :type)")
-    suspend fun exists(prompt: String, type: String): Boolean
 }

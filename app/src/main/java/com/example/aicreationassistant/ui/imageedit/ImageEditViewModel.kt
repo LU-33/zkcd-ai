@@ -20,14 +20,14 @@ import com.example.aicreationassistant.domain.filter.FilterEngine
 import com.example.aicreationassistant.domain.filter.FilterType
 import com.example.aicreationassistant.domain.doodle.DoodleEngine
 import com.example.aicreationassistant.domain.doodle.DoodleStroke
+import com.example.aicreationassistant.domain.watermark.WatermarkEngine
 import com.example.aicreationassistant.domain.model.TextItem
 import com.example.aicreationassistant.domain.crop.CropConstraints
 import com.example.aicreationassistant.domain.crop.CropEngine
 import com.example.aicreationassistant.domain.crop.CropRect
 import com.example.aicreationassistant.util.WatermarkPosition
-import com.example.aicreationassistant.util.addWatermark
-import com.example.aicreationassistant.util.toBitmap
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -81,9 +81,8 @@ data class ImageEditState(
     val flipVertical: Boolean = false,
     // 裁剪比例
     val cropRatio: CropRatio = CropRatio.FREE,
-    // 滤镜
+    // 滤镜 — 仅记录选择，不直接生成 bitmap
     val filterType: FilterType = FilterType.ORIGINAL,
-    val filteredBitmap: Bitmap? = null,
     // 加字
     val textItems: List<TextItem> = emptyList(),
     val pendingTextId: String? = null,  // 当前正在编辑的文字项 ID
@@ -95,10 +94,26 @@ data class ImageEditState(
     val currentDoodleStroke: DoodleStroke? = null,  // 正在绘制中的笔迹
     val doodleColor: Color = Color.Red,
     val doodleWidth: Float = 8f,
-    // 水印
+    // 水印 — 非破坏性状态层
     val watermarkText: String = "",
     val watermarkPosition: WatermarkPosition = WatermarkPosition.BOTTOM_RIGHT,
     val watermarkOpacity: Float = 0.5f,
+    val watermarkColor: Color = Color.White,
+    val watermarkTextSize: Float = 48f,
+    val watermarkShadowEnabled: Boolean = false,
+    val watermarkStrokeEnabled: Boolean = false,
+    val watermarkTileEnabled: Boolean = false,
+    // 图片水印
+    val watermarkImageUri: android.net.Uri? = null,
+    val watermarkImageBitmap: Bitmap? = null,
+    val watermarkImageScale: Float = 0.5f,
+    // 水印是否已确认应用（非破坏性标志位）
+    val watermarkApplied: Boolean = false,
+    // ===== 统一合成输出 =====
+    // 由 compositeAll() 生成，包含所有编辑状态的最终合成图
+    val displayBitmap: Bitmap? = null,
+    // 仅含滤镜的中间图层（用于文本/涂鸦编辑时的实时预览 — 叠加层在 Canvas 中绘制）
+    val filteredBase: Bitmap? = null,
     // 通用
     val isLoading: Boolean = false,
     val error: String? = null,
@@ -151,8 +166,11 @@ class ImageEditViewModel : ViewModel() {
                             isBitmapReady = true,
                             isLoading = false,
                             userScale = 1f, panOffsetX = 0f, panOffsetY = 0f,
-                            filterType = FilterType.ORIGINAL, filteredBitmap = null,
-                            textItems = emptyList(), doodleStrokes = emptyList()
+                            filterType = FilterType.ORIGINAL,
+                            displayBitmap = null, filteredBase = null,
+                            textItems = emptyList(), doodleStrokes = emptyList(),
+                            watermarkText = "", watermarkImageBitmap = null,
+                            watermarkApplied = false
                         )
                     }
                     // 4. 有画布尺寸则立即计算 baseScale
@@ -198,6 +216,12 @@ class ImageEditViewModel : ViewModel() {
     // ==================== 工具 ====================
 
     fun selectTool(tool: EditorTool?) {
+        // 切换工具前，清理未确认的水印状态（避免各分支 return 跳过清理）
+        val prevTool = _state.value.selectedTool
+        if (prevTool == EditorTool.WATERMARK && !_state.value.watermarkApplied && tool != EditorTool.WATERMARK) {
+            cancelWatermark()
+        }
+
         if (tool == EditorTool.CROP) {
             enterCropMode()
             return
@@ -223,7 +247,6 @@ class ImageEditViewModel : ViewModel() {
             val s = _state.value
             val isSelecting = s.selectedTool != EditorTool.TEXT
             if (isSelecting) {
-                // 进入加字模式 → 立即在图片中央创建待编辑文字项
                 val item = TextItem(
                     text = "",
                     x = s.bitmapWidth / 2f,
@@ -240,8 +263,21 @@ class ImageEditViewModel : ViewModel() {
                     )
                 }
             } else {
-                // 再次点击 → 取消
                 cancelTextEditing()
+            }
+            return
+        }
+        if (tool == EditorTool.WATERMARK) {
+            val s = _state.value
+            val isSelecting = s.selectedTool != EditorTool.WATERMARK
+            if (isSelecting) {
+                // 进入水印模式：如果之前已应用水印则保留状态，否则从空白开始
+                _state.update { it.copy(selectedTool = EditorTool.WATERMARK) }
+                // 触发预览刷新
+                if (s.watermarkApplied) refreshDisplay()
+            } else {
+                // 再次点击关闭 — 如果未应用则清空
+                if (!s.watermarkApplied) cancelWatermark() else _state.update { it.copy(selectedTool = null) }
             }
             return
         }
@@ -250,17 +286,10 @@ class ImageEditViewModel : ViewModel() {
 
     // ==================== 滤镜 ====================
 
+    /** 选择滤镜 — 仅更新状态，由 refreshDisplay 触发统一合成 */
     fun selectFilter(type: FilterType) {
-        val s = _state.value
-        val sourceBmp = s.bitmap ?: return
-        _state.update { it.copy(filterType = type, filteredBitmap = null) }
-        if (type == FilterType.ORIGINAL) return
-        viewModelScope.launch {
-            val filtered = withContext(Dispatchers.Default) {
-                FilterEngine.applyFilter(sourceBmp, type)
-            }
-            _state.update { it.copy(filteredBitmap = filtered) }
-        }
+        _state.update { it.copy(filterType = type) }
+        refreshDisplay()
     }
 
     // ==================== 加字 ====================
@@ -303,6 +332,7 @@ class ImageEditViewModel : ViewModel() {
         } else {
             _state.update { it.copy(pendingTextId = null, editingText = "", selectedTool = null) }
         }
+        refreshDisplay()
     }
 
     fun cancelTextEditing() {
@@ -315,6 +345,7 @@ class ImageEditViewModel : ViewModel() {
                 selectedTool = null
             )
         }
+        refreshDisplay()
     }
 
     fun updateTextPosition(id: String, x: Float, y: Float) {
@@ -380,10 +411,12 @@ class ImageEditViewModel : ViewModel() {
                 selectedTool = null
             )
         }
+        refreshDisplay()
     }
 
     fun confirmDoodle() {
         _state.update { it.copy(selectedTool = null) }
+        refreshDisplay()
     }
 
     // ==================== 裁剪 — 统一 Action 分发 ====================
@@ -538,12 +571,13 @@ class ImageEditViewModel : ViewModel() {
     // ==================== 裁剪执行 ====================
 
     /**
-     * 统一导出管线：原始 bitmap → 裁剪 → 旋转 → 翻转 → 输出。
-     * 裁剪在原始坐标空间中，旋转+翻转应用在裁剪结果上。
+     * 裁剪执行：以统一合成的 displayBitmap 为基础 → 裁剪 → 旋转 → 翻转 → 输出。
+     * 确保裁剪结果保留所有已添加的文字、涂鸦、滤镜和水印。
      */
     private fun applyCrop() {
         val s = _state.value
-        val bmp = s.bitmap ?: return
+        // 使用统一合成图，包含所有编辑状态
+        val src = s.displayBitmap ?: s.bitmap ?: return
         val l = s.cropRectLeft.toInt().coerceAtLeast(0)
         val t = s.cropRectTop.toInt().coerceAtLeast(0)
         val r = s.cropRectRight.toInt().coerceAtMost(s.bitmapWidth)
@@ -554,25 +588,25 @@ class ImageEditViewModel : ViewModel() {
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
                 try {
-                    // 阶段 1：裁剪（原始坐标空间）
-                    var result = Bitmap.createBitmap(bmp, l, t, cropW, cropH)
-                    // 阶段 2：旋转 + 翻转（按 crop → rotate → flip 顺序）
+                    // 阶段 1：裁剪
+                    var result = Bitmap.createBitmap(src, l, t, cropW, cropH)
+
+                    // 阶段 2：旋转 + 翻转
                     val needTransform = s.rotationDegrees != 0f || s.flipHorizontal || s.flipVertical
                     if (needTransform) {
                         val cx = result.width / 2f; val cy = result.height / 2f
                         val matrix = android.graphics.Matrix()
-                        // postScale = Flip 最后应用 → 等价于：先旋转再翻转
                         matrix.postScale(
                             if (s.flipHorizontal) -1f else 1f,
                             if (s.flipVertical) -1f else 1f,
                             cx, cy
                         )
-                        // postRotate = Rotate 在 Scale 之前 → 先旋转再翻转
                         matrix.postRotate(s.rotationDegrees, cx, cy)
                         val transformed = Bitmap.createBitmap(result, 0, 0, result.width, result.height, matrix, true)
                         result.recycle()
                         result = transformed
                     }
+
                     // 阶段 3：写入缓存
                     val ctx = com.example.aicreationassistant.AiCreationApp.instance
                     val dir = File(ctx.cacheDir, "shared")
@@ -596,56 +630,175 @@ class ImageEditViewModel : ViewModel() {
         }
     }
 
-    // ==================== 水印 ====================
+    // ==================== 水印（非破坏性状态层） ====================
 
-    fun updateWatermarkText(text: String) { _state.update { it.copy(watermarkText = text) } }
-    fun updateWatermarkPosition(pos: WatermarkPosition) { _state.update { it.copy(watermarkPosition = pos) } }
-    fun updateWatermarkOpacity(op: Float) { _state.update { it.copy(watermarkOpacity = op) } }
+    fun updateWatermarkText(text: String) { _state.update { it.copy(watermarkText = text) }; refreshDisplay() }
+    fun updateWatermarkPosition(pos: WatermarkPosition) { _state.update { it.copy(watermarkPosition = pos) }; refreshDisplay() }
+    fun updateWatermarkOpacity(op: Float) { _state.update { it.copy(watermarkOpacity = op) }; refreshDisplay() }
+    fun updateWatermarkColor(color: Color) { _state.update { it.copy(watermarkColor = color) }; refreshDisplay() }
+    fun updateWatermarkTextSize(size: Float) { _state.update { it.copy(watermarkTextSize = size) }; refreshDisplay() }
+    fun toggleWatermarkShadow() { _state.update { it.copy(watermarkShadowEnabled = !it.watermarkShadowEnabled) }; refreshDisplay() }
+    fun toggleWatermarkStroke() { _state.update { it.copy(watermarkStrokeEnabled = !it.watermarkStrokeEnabled) }; refreshDisplay() }
+    fun toggleWatermarkTile() { _state.update { it.copy(watermarkTileEnabled = !it.watermarkTileEnabled) }; refreshDisplay() }
+    fun updateWatermarkImageScale(scale: Float) { _state.update { it.copy(watermarkImageScale = scale) }; refreshDisplay() }
 
-    fun applyWatermark(context: Context) {
-        val bmp = _state.value.bitmap ?: return
-        val text = _state.value.watermarkText.trim()
-        if (text.isBlank()) { _state.update { it.copy(error = "请输入水印文字") }; return }
-        viewModelScope.launch {
-            _state.update { it.copy(isLoading = true) }
-            withContext(Dispatchers.IO) {
-                try {
-                    val watermarked = bmp.addWatermark(text, _state.value.watermarkPosition, _state.value.watermarkOpacity)
-                    val file = File(context.cacheDir, "shared/edited_${System.currentTimeMillis()}.jpg")
-                    file.parentFile?.mkdirs()
-                    FileOutputStream(file).use { watermarked.compress(Bitmap.CompressFormat.JPEG, 90, it) }
-                    watermarked.recycle()
-                    val uri = Uri.fromFile(file)
-                    _state.update {
-                        it.copy(displayUri = uri, isLoading = false, watermarkText = "",
-                            userScale = 1f, panOffsetX = 0f, panOffsetY = 0f)
+    fun setWatermarkImage(uri: android.net.Uri, bitmap: Bitmap) {
+        _state.update { it.copy(watermarkImageUri = uri, watermarkImageBitmap = bitmap) }
+        refreshDisplay()
+    }
+
+    fun removeWatermarkImage() {
+        val bmp = _state.value.watermarkImageBitmap
+        _state.update { it.copy(watermarkImageUri = null, watermarkImageBitmap = null) }
+        bmp?.recycle()
+        refreshDisplay()
+    }
+
+    /** 确认应用水印 — 非破坏性，仅设置标志位并关闭面板 */
+    fun applyWatermark() {
+        val s = _state.value
+        val hasText = s.watermarkText.isNotBlank()
+        val img = s.watermarkImageBitmap
+        val hasImage = img != null && !img.isRecycled
+        if (!hasText && !hasImage) {
+            _state.update { it.copy(error = "请输入水印文字或添加图片水印") }
+            return
+        }
+        _state.update { it.copy(watermarkApplied = true, selectedTool = null) }
+    }
+
+    /** 取消水印 — 清空水印状态并关闭面板 */
+    fun cancelWatermark() {
+        val bmp = _state.value.watermarkImageBitmap
+        _state.update {
+            it.copy(
+                watermarkText = "", watermarkImageUri = null, watermarkImageBitmap = null,
+                watermarkApplied = false, selectedTool = null
+            )
+        }
+        bmp?.recycle()
+        refreshDisplay()
+    }
+
+    /** 关闭水印面板但不改变水印已应用状态（用于面板右上角 X 按钮） */
+    fun closeWatermarkPanel() {
+        // 如果未应用，则清空；否则保持现状
+        if (!_state.value.watermarkApplied) {
+            cancelWatermark()
+        } else {
+            _state.update { it.copy(selectedTool = null) }
+        }
+    }
+
+    // ==================== 统一合成管线 ====================
+
+    /** 刷新 job — 用于去抖（debounce） */
+    private var refreshJob: Job? = null
+
+    /**
+     * 统一合成管线：原始图 → 涂鸦 → 文字 → 滤镜 → 水印
+     * 每当任意编辑状态变化时调用此方法，异步生成 displayBitmap。
+     * 使用 Job 去抖：快速连续变化时只执行最后一次。
+     */
+    private fun refreshDisplay() {
+        refreshJob?.cancel()
+        refreshJob = viewModelScope.launch(Dispatchers.Default) {
+            val s = _state.value
+            val result = compositeAll(s)
+            withContext(Dispatchers.Main) {
+                // 回收旧的 displayBitmap
+                _state.value.displayBitmap?.let { old ->
+                    if (old !== result && old !== s.bitmap && old !== s.filteredBase) {
+                        try { old.recycle() } catch (_: Exception) {}
                     }
-                    loadBitmap(uri.toString())
-                } catch (e: Exception) {
-                    _state.update { it.copy(isLoading = false, error = "水印失败: ${e.message}") }
+                }
+                _state.update { it.copy(displayBitmap = result) }
+            }
+        }
+    }
+
+    /**
+     * 统一合成函数：将所有编辑状态合成为一张最终图片。
+     * 管线顺序：原始图 → 涂鸦 → 文字 → 滤镜 → 水印
+     *
+     * 注意：此方法在后台线程调用，返回的新 Bitmap 由调用方管理生命周期。
+     */
+    private fun compositeAll(s: ImageEditState): Bitmap? {
+        val base = s.bitmap ?: return null
+        var current: Bitmap = base
+        val intermediates = mutableListOf<Bitmap>() // 追踪中间产物以便回收
+
+        try {
+            // ——— Step 1: 绘制涂鸦 ———
+            if (s.doodleStrokes.isNotEmpty()) {
+                val copy = base.copy(Bitmap.Config.ARGB_8888, true)
+                intermediates.add(copy)
+                DoodleEngine.renderStrokesToBitmap(copy, s.doodleStrokes)
+                current = copy
+            }
+
+            // ——— Step 2: 绘制文字 ———
+            if (s.textItems.isNotEmpty()) {
+                val copy = current.copy(Bitmap.Config.ARGB_8888, true)
+                intermediates.add(copy)
+                drawTextItemsOnCanvas(Canvas(copy), s.textItems)
+                current = copy
+            }
+
+            // ——— Step 3: 应用滤镜（作用于已合成涂鸦+文字的图层） ———
+            if (s.filterType != FilterType.ORIGINAL) {
+                val filtered = FilterEngine.applyFilter(current, s.filterType)
+                intermediates.add(filtered)
+                current = filtered
+            }
+
+            // ——— Step 4: 叠加水印（已应用 或 正在水印编辑模式中预览）———
+            val hasWatermark = s.watermarkApplied ||
+                (s.selectedTool == EditorTool.WATERMARK &&
+                    (s.watermarkText.isNotBlank() ||
+                        (s.watermarkImageBitmap != null && !s.watermarkImageBitmap.isRecycled)))
+            if (hasWatermark) {
+                val watermarked = WatermarkEngine.apply(
+                    source = current,
+                    text = s.watermarkText.trim(),
+                    position = s.watermarkPosition,
+                    opacity = s.watermarkOpacity,
+                    textSize = s.watermarkTextSize,
+                    color = s.watermarkColor,
+                    shadowEnabled = s.watermarkShadowEnabled,
+                    strokeEnabled = s.watermarkStrokeEnabled,
+                    tileEnabled = s.watermarkTileEnabled,
+                    imageBitmap = s.watermarkImageBitmap,
+                    imageScale = s.watermarkImageScale
+                )
+                intermediates.add(watermarked)
+                current = watermarked
+            }
+
+            // 回收不再需要的中间产物（current 保留不回收）
+            for (bmp in intermediates) {
+                if (bmp !== current && bmp !== base) {
+                    try { bmp.recycle() } catch (_: Exception) {}
                 }
             }
+
+            return current
+        } catch (e: Exception) {
+            // 出错时回收所有中间产物
+            for (bmp in intermediates) {
+                if (bmp !== base) {
+                    try { bmp.recycle() } catch (_: Exception) {}
+                }
+            }
+            return base
         }
     }
 
     // ==================== 保存 ====================
 
+    /** 直接使用统一合成的 displayBitmap 保存，预览与导出完全一致 */
     fun saveToGallery(context: Context): Uri? {
-        val s = _state.value
-        val src = s.filteredBitmap ?: s.bitmap ?: return null
-        // 如果有文字对象或涂鸦，绘制到 Bitmap 副本上再保存
-        val hasOverlay = s.textItems.isNotEmpty() || s.doodleStrokes.isNotEmpty()
-        val bmp = if (hasOverlay) {
-            val copy = src.copy(Bitmap.Config.ARGB_8888, true)
-            val canvas = Canvas(copy)
-            if (s.doodleStrokes.isNotEmpty()) {
-                DoodleEngine.renderStrokesToBitmap(copy, s.doodleStrokes)
-            }
-            if (s.textItems.isNotEmpty()) {
-                drawTextItemsOnCanvas(canvas, s.textItems)
-            }
-            copy
-        } else src
+        val bmp = _state.value.displayBitmap ?: _state.value.bitmap ?: return null
         return try {
             val savedUri: Uri?
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -664,7 +817,6 @@ class ImageEditViewModel : ViewModel() {
                 FileOutputStream(file).use { bmp.compress(Bitmap.CompressFormat.JPEG, 95, it) }
                 savedUri = Uri.fromFile(file)
             }
-            if (bmp !== src) bmp.recycle()
             savedUri
         } catch (_: Exception) { null }
     }
@@ -679,6 +831,25 @@ class ImageEditViewModel : ViewModel() {
             }
             canvas.drawText(item.text, item.x, item.y, paint)
         }
+    }
+
+    /** 直接使用统一合成的 displayBitmap 分享，预览与导出完全一致 */
+    fun shareImage(context: Context) {
+        val bmp = _state.value.displayBitmap ?: _state.value.bitmap ?: return
+        try {
+            val file = File(context.cacheDir, "shared/share_${System.currentTimeMillis()}.jpg")
+            file.parentFile?.mkdirs()
+            FileOutputStream(file).use { bmp.compress(Bitmap.CompressFormat.JPEG, 95, it) }
+            val uri = androidx.core.content.FileProvider.getUriForFile(
+                context, "${context.packageName}.fileprovider", file
+            )
+            val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                type = "image/jpeg"
+                putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(android.content.Intent.createChooser(intent, "分享图片"))
+        } catch (_: Exception) {}
     }
 
     fun markSaved() { _state.update { it.copy(isSaved = true) } }

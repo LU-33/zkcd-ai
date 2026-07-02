@@ -1,6 +1,7 @@
 package com.example.aicreationassistant.ui.imageedit
 
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -12,6 +13,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -61,6 +64,7 @@ import com.example.aicreationassistant.domain.filter.FilterEngine
 import com.example.aicreationassistant.domain.filter.FilterType
 import com.example.aicreationassistant.domain.model.TEXT_COLOR_OPTIONS
 import com.example.aicreationassistant.domain.model.TextItem
+import com.example.aicreationassistant.domain.watermark.WatermarkEngine
 import com.example.aicreationassistant.util.WatermarkPosition
 import java.io.File
 import kotlin.math.cos
@@ -110,10 +114,10 @@ private fun findTextItemAt(
         val sx = rx + item.x * effScale
         val sy = ry + item.y * effScale  // top-left
         measurePaint.textSize = item.fontSize * effScale * 2.5f
-        val tw = if (item.text.isNotEmpty()) measurePaint.measureText(item.text) else 120f  // 空文字给 120px 宽命中区
+        val tw = if (item.text.isNotEmpty()) measurePaint.measureText(item.text) else 300f
         val fm = measurePaint.fontMetrics
-        val th = fm.bottom - fm.top.coerceAtLeast(40f)  // 最少 40px 高
-        val pad = 36f  // 四周容差 36px
+        val th = (fm.bottom - fm.top).coerceAtLeast(60f)
+        val pad = 64f  // 加大容差，轻松点击
         if (touchX in (sx - pad)..(sx + tw + pad) &&
             touchY in (sy - pad)..(sy + th + pad)
         ) {
@@ -151,6 +155,9 @@ fun ImageEditScreen(
                     title = { Text("图片编辑") },
                     navigationIcon = { IconButton(onClick = onNavigateBack) { Icon(Icons.Default.ArrowBack, contentDescription = "返回") } },
                     actions = {
+                        IconButton(onClick = { viewModel.shareImage(context) }) {
+                            Icon(Icons.Default.Share, contentDescription = "分享")
+                        }
                         IconButton(onClick = {
                             val uri = viewModel.saveToGallery(context)
                             if (uri != null) {
@@ -236,12 +243,27 @@ fun ImageEditScreen(
                                     onDone = { viewModel.confirmAddText() }
                                 )
                                 EditorTool.WATERMARK -> WatermarkPanel(
-                                    state.watermarkText, state.watermarkPosition, state.watermarkOpacity,
-                                    state.isLoading,
-                                    { viewModel.updateWatermarkText(it) },
-                                    { viewModel.updateWatermarkPosition(it) },
-                                    { viewModel.updateWatermarkOpacity(it) },
-                                    { viewModel.applyWatermark(context) }
+                                    text = state.watermarkText, position = state.watermarkPosition,
+                                    opacity = state.watermarkOpacity, color = state.watermarkColor,
+                                    textSize = state.watermarkTextSize,
+                                    shadowEnabled = state.watermarkShadowEnabled,
+                                    strokeEnabled = state.watermarkStrokeEnabled,
+                                    tileEnabled = state.watermarkTileEnabled,
+                                    imageBitmap = state.watermarkImageBitmap,
+                                    imageScale = state.watermarkImageScale, isLoading = state.isLoading,
+                                    onTextChanged = { viewModel.updateWatermarkText(it) },
+                                    onPositionChanged = { viewModel.updateWatermarkPosition(it) },
+                                    onOpacityChanged = { viewModel.updateWatermarkOpacity(it) },
+                                    onColorChanged = { viewModel.updateWatermarkColor(it) },
+                                    onTextSizeChanged = { viewModel.updateWatermarkTextSize(it) },
+                                    onToggleShadow = { viewModel.toggleWatermarkShadow() },
+                                    onToggleStroke = { viewModel.toggleWatermarkStroke() },
+                                    onToggleTile = { viewModel.toggleWatermarkTile() },
+                                    onImageScaleChanged = { viewModel.updateWatermarkImageScale(it) },
+                                    onImageSelected = { uri, bmp -> viewModel.setWatermarkImage(uri, bmp) },
+                                    onImageRemoved = { viewModel.removeWatermarkImage() },
+                                    onClose = { viewModel.closeWatermarkPanel() },
+                                    onApply = { viewModel.applyWatermark() }
                                 )
                                 else -> {}
                             }
@@ -283,7 +305,10 @@ fun ImageEditScreen(
             val ch = constraints.maxHeight.toFloat()
             LaunchedEffect(cw, ch) { viewModel.setCanvasSize(cw, ch) }
 
-            val bmp = state.filteredBitmap ?: state.bitmap
+            // 文字/涂鸦编辑模式：使用原始图+overlay，避免 displayBitmap 内已合成内容与 overlay 重复
+            // 其他模式：使用统一合成图 displayBitmap（涂鸦/滤镜/水印已 baked in）
+            val isOverlayMode = (state.selectedTool == EditorTool.TEXT || state.selectedTool == EditorTool.DOODLE) && !state.cropMode
+            val bmp = if (isOverlayMode) state.bitmap else (state.displayBitmap ?: state.bitmap)
             val bmpW = bmp?.width ?: 0
             val bmpH = bmp?.height ?: 0
             val effScale = state.baseScale * state.userScale
@@ -339,39 +364,35 @@ fun ImageEditScreen(
                                             )
                                         }
                                     }
-                                    isTextEdit || (isNormal && state.textItems.isNotEmpty()) -> {
-                                        // 加字模式 / 普通模式有文字 → detectDragGestures 统一处理
+                                    isTextEdit -> {
+                                        // 加字模式：直接在图片上拖拽移动文字，无 hit-test 限制
                                         Modifier.pointerInput("text") {
-                                            var dragTargetId: String? = null
-                                            detectDragGestures(
-                                                onDragStart = { off ->
-                                                    val s = latest
-                                                    dragTargetId = findTextItemAt(
-                                                        off.x, off.y, s.textItems, rx, ry, effScale
-                                                    )
-                                                },
-                                                onDrag = { change, dragAmount ->
-                                                    val id = dragTargetId
-                                                    if (id != null) {
-                                                        val dx = dragAmount.x / effScale
-                                                        val dy = dragAmount.y / effScale
-                                                        val s = latest
-                                                        val item = s.textItems.find { it.id == id }
-                                                        if (item != null && (dx != 0f || dy != 0f)) {
-                                                            viewModel.updateTextPosition(id, item.x + dx, item.y + dy)
+                                            awaitEachGesture {
+                                                val down = awaitFirstDown(requireUnconsumed = false)
+                                                val s = latest
+                                                // 优先精确命中，失败则取 pendingTextId（当前编辑的文字）
+                                                val hitId = findTextItemAt(down.position.x, down.position.y, s.textItems, rx, ry, effScale)
+                                                    ?: s.pendingTextId
+                                                if (hitId == null) return@awaitEachGesture
+                                                down.consume()
+                                                var prev = down.position
+                                                while (true) {
+                                                    val event = awaitPointerEvent()
+                                                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                                    if (!change.pressed) { change.consume(); break }
+                                                    val s2 = latest
+                                                    val item = s2.textItems.find { it.id == hitId }
+                                                    if (item != null) {
+                                                        val dx = (change.position.x - prev.x) / effScale
+                                                        val dy = (change.position.y - prev.y) / effScale
+                                                        if (dx != 0f || dy != 0f) {
+                                                            viewModel.updateTextPosition(hitId, item.x + dx, item.y + dy)
                                                         }
-                                                    } else if (isNormal) {
-                                                        // 未命中文字 + 普通模式 → 手动 pan
-                                                        viewModel.updateTransform(
-                                                            state.userScale,
-                                                            state.panOffsetX + dragAmount.x,
-                                                            state.panOffsetY + dragAmount.y
-                                                        )
                                                     }
+                                                    prev = change.position
                                                     change.consume()
-                                                },
-                                                onDragEnd = { dragTargetId = null }
-                                            )
+                                                }
+                                            }
                                         }
                                     }
                                     isCrop -> {
@@ -483,9 +504,11 @@ fun ImageEditScreen(
                                 drawCropOverlay(state, rx, ry, dispW, dispH, effScale)
                             }
                         }
-                        // ——— 绘制文字对象（不受旋转/翻转影响）———
+                        // ——— 绘制文字对象（仅在编辑模式中作为 overlay，用于拖拽交互）———
+                        // displayBitmap 已包含确认后的文字，此处仅覆盖编辑中的文字
+                        val isTextEditNow = latest.selectedTool == EditorTool.TEXT && !latest.cropMode
                         val textItems = latest.textItems
-                        if (textItems.isNotEmpty()) {
+                        if (textItems.isNotEmpty() && isTextEditNow) {
                             drawIntoCanvas { canvas ->
                                 for (item in textItems) {
                                     val sx = rx + item.x * effScale
@@ -496,7 +519,6 @@ fun ImageEditScreen(
                                         textSize = scaledSize
                                         color = item.color.toArgb()
                                     }
-                                    // item.y = 文字 top-left → 换算为 baseline
                                     val fm = paint.fontMetrics
                                     val baselineY = sy - fm.top
                                     canvas.nativeCanvas.drawText(item.text, sx, baselineY, paint)
@@ -517,7 +539,14 @@ fun ImageEditScreen(
                             }
                         }
                         // ——— 绘制涂鸦笔迹 ———
-                        val allStrokes = latest.doodleStrokes.toList() + listOfNotNull(latest.currentDoodleStroke)
+                        // 涂鸦模式：displayBitmap 尚未合成涂鸦，渲染所有笔画（已完成+进行中）
+                        // 非涂鸦模式：displayBitmap 已包含完成笔画，仅渲染进行中的笔画
+                        val isDoodleModeNow = latest.selectedTool == EditorTool.DOODLE && !latest.cropMode
+                        val allStrokes = if (isDoodleModeNow) {
+                            latest.doodleStrokes + listOfNotNull(latest.currentDoodleStroke)
+                        } else {
+                            listOfNotNull(latest.currentDoodleStroke)
+                        }
                         if (allStrokes.isNotEmpty()) {
                             drawIntoCanvas { canvas ->
                                 DoodleEngine.renderStrokes(canvas.nativeCanvas, allStrokes, rx, ry, effScale)
@@ -1057,51 +1086,195 @@ private fun DoodlePanel(
     }
 }
 
+
 @Composable
 private fun WatermarkPanel(
-    text: String,
-    position: WatermarkPosition,
-    opacity: Float,
-    isLoading: Boolean,
-    onText: (String) -> Unit,
-    onPos: (WatermarkPosition) -> Unit,
-    onOp: (Float) -> Unit,
+    text: String, position: WatermarkPosition, opacity: Float, color: Color,
+    textSize: Float, shadowEnabled: Boolean, strokeEnabled: Boolean, tileEnabled: Boolean,
+    imageBitmap: Bitmap?, imageScale: Float, isLoading: Boolean,
+    onTextChanged: (String) -> Unit,
+    onPositionChanged: (WatermarkPosition) -> Unit,
+    onOpacityChanged: (Float) -> Unit,
+    onColorChanged: (Color) -> Unit,
+    onTextSizeChanged: (Float) -> Unit,
+    onToggleShadow: () -> Unit,
+    onToggleStroke: () -> Unit,
+    onToggleTile: () -> Unit,
+    onImageScaleChanged: (Float) -> Unit,
+    onImageSelected: (android.net.Uri, Bitmap) -> Unit,
+    onImageRemoved: () -> Unit,
+    onClose: () -> Unit,
     onApply: () -> Unit
 ) {
-    Column(
-        Modifier.fillMaxWidth().padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        Text("水印设置", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
-        OutlinedTextField(
-            text, onText, Modifier.fillMaxWidth(),
-            placeholder = { Text("输入水印文字") },
-            singleLine = true,
-            textStyle = MaterialTheme.typography.bodyMedium
-        )
-        Text("位置", style = MaterialTheme.typography.labelMedium)
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            WatermarkPosition.entries.take(3).forEach { p ->
-                FilterChip(selected = position == p, onClick = { onPos(p) }, label = { Text(p.label) })
-            }
+    val context = LocalContext.current
+    var textExpanded by remember { mutableStateOf(true) }
+    var imageExpanded by remember { mutableStateOf(true) }
+
+    val imagePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        uri?.let {
+            try {
+                val bmp = BitmapFactory.decodeStream(context.contentResolver.openInputStream(it))
+                if (bmp != null) onImageSelected(it, bmp)
+            } catch (_: Exception) {}
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            WatermarkPosition.entries.drop(3).forEach { p ->
-                FilterChip(selected = position == p, onClick = { onPos(p) }, label = { Text(p.label) })
+    }
+
+    val canApply = !isLoading && (text.isNotBlank() || (imageBitmap != null && !imageBitmap.isRecycled))
+
+    Box(modifier = Modifier.fillMaxWidth().heightIn(max = 340.dp)) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(bottom = 56.dp)
+        ) {
+             Spacer(Modifier.height(1.dp))
+            // ═══ 文字输入（居中、缩窄） ═══
+            OutlinedTextField(
+                value = text,
+                onValueChange = onTextChanged,
+                modifier = Modifier
+                    .fillMaxWidth(0.9f)
+                    .align(Alignment.CenterHorizontally),
+                placeholder = { Text("输入水印文字", textAlign = TextAlign.Center) },
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodyMedium.copy(textAlign = TextAlign.Center)
+            )
+
+            Spacer(Modifier.height(3.dp))
+
+            // ═══ 文字水印设置（折叠面板） ═══
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Column {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().clickable { textExpanded = !textExpanded }
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            if (textExpanded) "▼ 文字水印设置" else "▶ 文字水印设置",
+                            style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    if (textExpanded) {
+                        HorizontalDivider()
+                        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 2.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            // 颜色
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text("颜色", style = MaterialTheme.typography.labelMedium, modifier = Modifier.width(52.dp))
+                                TEXT_COLOR_OPTIONS.forEach { (c, _) ->
+                                    Box(
+                                        modifier = Modifier.size(26.dp).clip(CircleShape).background(c)
+                                            .then(if (color == c) Modifier.border(2.dp, Color.White, CircleShape)
+                                                .border(3.dp, MaterialTheme.colorScheme.primary, CircleShape)
+                                            else Modifier.border(1.dp, Color.Gray.copy(alpha = 0.4f), CircleShape))
+                                            .clickable { onColorChanged(c) }
+                                    )
+                                }
+                            }
+                            // 字体大小
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("字体大小", style = MaterialTheme.typography.labelMedium, modifier = Modifier.width(52.dp))
+                                Text("${textSize.toInt()}sp", style = MaterialTheme.typography.labelSmall, modifier = Modifier.width(36.dp))
+                                Slider(value = textSize, onValueChange = onTextSizeChanged, valueRange = 12f..80f, modifier = Modifier.weight(1f))
+                            }
+                            // 透明度
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("透明度", style = MaterialTheme.typography.labelMedium, modifier = Modifier.width(52.dp))
+                                Text("${(opacity * 100).toInt()}%", style = MaterialTheme.typography.labelSmall, modifier = Modifier.width(36.dp))
+                                Slider(value = opacity, onValueChange = onOpacityChanged, valueRange = 0.1f..1f, modifier = Modifier.weight(1f))
+                            }
+                            // 位置
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("位置", style = MaterialTheme.typography.labelMedium, modifier = Modifier.width(52.dp))
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(40.dp)) {
+                                WatermarkPosition.entries.take(3).forEach { p ->
+                                    FilterChip(selected = position == p, onClick = { onPositionChanged(p) }, label = { Text(p.label) }, modifier = Modifier.height(30.dp))
+                                }
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(40.dp)) {
+                                WatermarkPosition.entries.drop(3).forEach { p ->
+                                    FilterChip(selected = position == p, onClick = { onPositionChanged(p) }, label = { Text(p.label) }, modifier = Modifier.height(30.dp))
+                                }
+                            }
+                            // 效果开关
+                            Row(horizontalArrangement = Arrangement.spacedBy(40.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(checked = shadowEnabled, onCheckedChange = { onToggleShadow() }); Text("阴影", style = MaterialTheme.typography.labelSmall) }
+                                Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(checked = strokeEnabled, onCheckedChange = { onToggleStroke() }); Text("描边", style = MaterialTheme.typography.labelSmall) }
+                                Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(checked = tileEnabled, onCheckedChange = { onToggleTile() }); Text("平铺", style = MaterialTheme.typography.labelSmall) }
+                            }
+                        }
+                    }
+                }
             }
+
+            // ═══ 图片水印设置（折叠面板） ═══
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Column {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().clickable { imageExpanded = !imageExpanded }
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            if (imageExpanded) "▼ 图片水印设置" else "▶ 图片水印设置",
+                            style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    if (imageExpanded) {
+                        HorizontalDivider()
+                        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            if (imageBitmap != null && !imageBitmap.isRecycled) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Image(bitmap = imageBitmap.asImageBitmap(), contentDescription = "水印图片",
+                                        modifier = Modifier.size(44.dp).clip(RoundedCornerShape(8.dp)), contentScale = ContentScale.Crop)
+                                    Spacer(Modifier.width(10.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text("缩放：${(imageScale * 100).toInt()}%", style = MaterialTheme.typography.labelSmall)
+                                        Slider(value = imageScale, onValueChange = onImageScaleChanged, valueRange = 0.2f..2f)
+                                    }
+                                    IconButton(onClick = onImageRemoved, modifier = Modifier.size(28.dp)) {
+                                        Icon(Icons.Default.Close, "移除", Modifier.size(18.dp), tint = Color(0xFF666666))
+                                    }
+                                }
+                                OutlinedButton(onClick = { imagePicker.launch("image/*") }, modifier = Modifier.fillMaxWidth().height(36.dp)) {
+                                    Text("更换图片", style = MaterialTheme.typography.labelSmall)
+                                }
+                            } else {
+                                OutlinedButton(
+                                    onClick = { imagePicker.launch("image/*") },
+                                    modifier = Modifier.fillMaxWidth().height(44.dp)
+                                ) {
+                                    Icon(Icons.Default.Add, null, Modifier.size(20.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("添加图片水印", style = MaterialTheme.typography.labelMedium)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(12.dp))
         }
-        Text("透明度: ${(opacity * 100).toInt()}%", style = MaterialTheme.typography.labelMedium)
-        Slider(opacity, onOp, valueRange = 0.1f..1f, modifier = Modifier.fillMaxWidth())
-        Button(onClick = onApply, Modifier.fillMaxWidth(), enabled = !isLoading && text.isNotBlank()) {
-            if (isLoading) {
-                CircularProgressIndicator(
-                    Modifier.size(18.dp),
-                    color = MaterialTheme.colorScheme.onPrimary,
-                    strokeWidth = 2.dp
-                )
-                Spacer(Modifier.width(6.dp))
+
+        // ═══ 底部固定按钮 ═══
+        Surface(modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth(), shadowElevation = 8.dp, color = MaterialTheme.colorScheme.surface) {
+            Button(onClick = onApply, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+                enabled = canApply, shape = RoundedCornerShape(10.dp)) {
+                if (isLoading) { CircularProgressIndicator(Modifier.size(18.dp), color = MaterialTheme.colorScheme.onPrimary, strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)) }
+                Text("应用水印", style = MaterialTheme.typography.labelLarge)
             }
-            Text("应用水印")
         }
     }
 }

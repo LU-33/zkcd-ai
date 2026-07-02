@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.example.aicreationassistant.AiCreationApp
 import com.example.aicreationassistant.domain.model.ContentType
 import com.example.aicreationassistant.domain.model.ConversationTurn
 import com.example.aicreationassistant.domain.model.CreationType
@@ -15,11 +16,14 @@ import com.example.aicreationassistant.util.Constants
 import com.example.aicreationassistant.util.NetworkMonitor
 import com.example.aicreationassistant.util.extractTitle
 import com.example.aicreationassistant.util.getImageInfo
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 
 data class ImageDescState(
     val selectedImageUri: Uri? = null,
@@ -65,9 +69,37 @@ class ImageDescViewModel(
             it.copy(
                 selectedImageUri = uri,
                 imageFileName = fileName,
-                qwenAnalysis = "",  // 重置，下次生成时重新分析
+                qwenAnalysis = "",
                 hasGenerated = false
             )
+        }
+        // 复制到 app 内部存储，确保收藏/历史中的图片在重启后仍可访问
+        persistImageUri(uri, fileName)
+    }
+
+    /**
+     * 将 content:// 等临时 URI 指向的图片复制到 app 内部存储，
+     * 更新 selectedImageUri 为持久化路径。
+     */
+    private fun persistImageUri(sourceUri: Uri, fileName: String) {
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    val ctx = AiCreationApp.instance
+                    val dir = File(ctx.filesDir, "image_desc")
+                    if (!dir.exists()) dir.mkdirs()
+                    val destFile = File(dir, "${System.currentTimeMillis()}_${fileName}")
+                    ctx.contentResolver.openInputStream(sourceUri)?.use { input ->
+                        destFile.outputStream().use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                    val persistentUri = Uri.fromFile(destFile)
+                    _state.update { it.copy(selectedImageUri = persistentUri) }
+                }
+            } catch (_: Exception) {
+                // 复制失败则保留原 URI（收藏/历史可能无法显示图片）
+            }
         }
     }
 

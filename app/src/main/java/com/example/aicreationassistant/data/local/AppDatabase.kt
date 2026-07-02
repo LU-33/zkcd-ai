@@ -12,7 +12,7 @@ import com.example.aicreationassistant.data.local.entity.HistoryEntity
         FavoriteEntity::class,
         HistoryEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {

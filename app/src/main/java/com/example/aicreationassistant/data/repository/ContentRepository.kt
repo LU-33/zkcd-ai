@@ -40,12 +40,14 @@ class ContentRepository(
         imageUri: String? = null
     ): Long {
         val result = cryptoManager.encrypt(content)
+        val promptResult = cryptoManager.encrypt(originalPrompt)
         val entity = FavoriteEntity(
             encryptedContent = result.ciphertext,
             contentType = contentType.key,
             creationType = creationType.key,
-            originalPrompt = originalPrompt,
+            originalPrompt = promptResult.ciphertext,
             iv = result.iv,
+            ivPrompt = promptResult.iv,
             title = title,
             imageUri = imageUri
         )
@@ -58,10 +60,6 @@ class ContentRepository(
 
     suspend fun clearAllFavorites() {
         favoriteDao.deleteAll()
-    }
-
-    suspend fun isFavorite(prompt: String, type: String): Boolean {
-        return favoriteDao.exists(prompt, type)
     }
 
     // ==================== 历史记录 ====================
@@ -85,12 +83,14 @@ class ContentRepository(
         imageUri: String? = null
     ): Long {
         val result = cryptoManager.encrypt(content)
+        val promptResult = cryptoManager.encrypt(originalPrompt)
         val entity = HistoryEntity(
             encryptedContent = result.ciphertext,
             contentType = contentType.key,
             creationType = creationType.key,
-            originalPrompt = originalPrompt,
+            originalPrompt = promptResult.ciphertext,
             iv = result.iv,
+            ivPrompt = promptResult.iv,
             title = title,
             imageUri = imageUri
         )
@@ -109,6 +109,7 @@ class ContentRepository(
 
     suspend fun updateContent(item: ContentItem) {
         val result = cryptoManager.encrypt(item.content)
+        val promptResult = cryptoManager.encrypt(item.originalPrompt)
         if (item.isFavorite) {
             favoriteDao.insert(
                 FavoriteEntity(
@@ -116,8 +117,9 @@ class ContentRepository(
                     encryptedContent = result.ciphertext,
                     contentType = item.contentType.key,
                     creationType = item.creationType.key,
-                    originalPrompt = item.originalPrompt,
+                    originalPrompt = promptResult.ciphertext,
                     iv = result.iv,
+                    ivPrompt = promptResult.iv,
                     title = item.title,
                     imageUri = item.imageUri
                 )
@@ -129,8 +131,9 @@ class ContentRepository(
                     encryptedContent = result.ciphertext,
                     contentType = item.contentType.key,
                     creationType = item.creationType.key,
-                    originalPrompt = item.originalPrompt,
+                    originalPrompt = promptResult.ciphertext,
                     iv = result.iv,
+                    ivPrompt = promptResult.iv,
                     title = item.title,
                     imageUri = item.imageUri
                 )
@@ -143,6 +146,7 @@ class ContentRepository(
     private fun FavoriteEntity.toContentItem(): ContentItem? {
         return try {
             val decrypted = cryptoManager.decrypt(encryptedContent, iv)
+            val decryptedPrompt = cryptoManager.decrypt(originalPrompt, ivPrompt)
             ContentItem(
                 id = id,
                 content = decrypted,
@@ -150,7 +154,7 @@ class ContentRepository(
                     ?: ContentType.TEXT,
                 creationType = CreationType.entries.firstOrNull { it.key == creationType }
                     ?: CreationType.SOCIAL_MEDIA,
-                originalPrompt = originalPrompt,
+                originalPrompt = decryptedPrompt,
                 title = title,
                 imageUri = imageUri,
                 createdAt = createdAt,
@@ -164,6 +168,7 @@ class ContentRepository(
     private fun HistoryEntity.toContentItem(): ContentItem? {
         return try {
             val decrypted = cryptoManager.decrypt(encryptedContent, iv)
+            val decryptedPrompt = cryptoManager.decrypt(originalPrompt, ivPrompt)
             ContentItem(
                 id = id,
                 content = decrypted,
@@ -171,7 +176,7 @@ class ContentRepository(
                     ?: ContentType.TEXT,
                 creationType = CreationType.entries.firstOrNull { it.key == creationType }
                     ?: CreationType.SOCIAL_MEDIA,
-                originalPrompt = originalPrompt,
+                originalPrompt = decryptedPrompt,
                 title = title,
                 imageUri = imageUri,
                 createdAt = createdAt,

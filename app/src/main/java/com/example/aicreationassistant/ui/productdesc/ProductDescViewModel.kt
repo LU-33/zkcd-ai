@@ -167,9 +167,10 @@ class ProductDescViewModel(
                         append("\n3. 规格参数：列出能推断的参数（尺寸/重量/材质/颜色等）")
                         append("\n4. 适用人群/场景：推断目标用户和使用场景")
                         append("\n\n注意：只输出从图片分析中能确定或合理推断的内容，不确定的标注「待补充」。")
+                        append("\n\n**禁止输出任何问候语或前缀**（如'好的''根据''以下是'等），直接输出卖点草稿内容。")
                     },
                     history = emptyList(),
-                    newUserMessage = "图片分析结果：\n\n$imageDescriptions\n\n请生成卖点草稿。"
+                    newUserMessage = "图片分析结果：\n\n$imageDescriptions\n\n请直接生成卖点草稿，不要加任何前缀语。"
                 ).onSuccess { result ->
                     _state.update {
                         it.copy(
@@ -209,8 +210,11 @@ class ProductDescViewModel(
 
     fun sendMessage(context: Context? = null) {
         val isFollowUp = _state.value.hasGenerated
-        val messageText = if (isFollowUp) _state.value.currentInput.trim()
+        val rawText = if (isFollowUp) _state.value.currentInput.trim()
             else _state.value.sellingPoints.trim()
+        // 追加强制指令，防止 AI 输出前缀语
+        val messageText = if (isFollowUp) "$rawText\n\n（直接输出修改后的完整文案，不要加任何前缀语或确认语）"
+            else rawText
 
         if (messageText.isBlank()) {
             _state.update { it.copy(error = if (isFollowUp) "请输入修改要求" else "请输入商品卖点和要求") }
@@ -263,6 +267,7 @@ class ProductDescViewModel(
                 append("\n\n---")
                 append("\n请严格按照上述「输出结构」，结合【图片AI分析】和【用户卖点要求】，为「${platform.label}」平台撰写完整的商品上架文案。")
                 append("\n注意：如果用户卖点中已包含商品名称/规格等信息，优先使用用户提供的信息。图片分析仅作为补充参考。")
+                append("\n**重要：只输出文案本身，禁止任何前缀语、问候语或后缀总结。**")
             }
 
             deepSeekRepo.generateConversation(
