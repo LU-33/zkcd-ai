@@ -183,8 +183,8 @@ fun ImageEditScreen(
                 TopAppBar(
                     title = { Text("裁剪", style = MaterialTheme.typography.titleSmall) },
                     colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = Color(0xE6333333),
-                        titleContentColor = Color.White
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        titleContentColor = MaterialTheme.colorScheme.onPrimary
                     )
                 )
             }

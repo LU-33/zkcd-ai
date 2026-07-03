@@ -260,7 +260,7 @@ fun ImageDescScreen(
                         ) {
                             Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("编辑图片（裁剪 / 水印）")
+                            Text("编辑图片（裁剪 / 水印等）")
                         }
                     }
 

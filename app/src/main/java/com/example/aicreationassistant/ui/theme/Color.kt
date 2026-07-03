@@ -2,10 +2,10 @@ package com.example.aicreationassistant.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// Primary - 蓝紫色系
-val Primary = Color(0xFF6C63FF)
-val PrimaryVariant = Color(0xFF5A52E5)
-val PrimaryContainer = Color(0xFFE8E5FF)
+// Primary - 紫色系（与首页渐变统一：6366F1→7C3AED→9333EA）
+val Primary = Color(0xFF7C3AED)
+val PrimaryVariant = Color(0xFF6366F1)
+val PrimaryContainer = Color(0xFFF0EEFF)
 val OnPrimary = Color.White
 val OnPrimaryContainer = Color(0xFF1C1A3A)
 
@@ -37,7 +37,7 @@ val CardStart3 = Color(0xFFF59E0B)
 val CardEnd3 = Color(0xFFF97316)
 
 // Dark theme
-val DarkPrimary = Color(0xFFC5C0FF)
+val DarkPrimary = Color(0xFFB5AEFF)
 val DarkPrimaryContainer = Color(0xFF4E48D6)
 val DarkSecondary = Color(0xFF5DF4D5)
 val DarkBackground = Color(0xFF121217)
