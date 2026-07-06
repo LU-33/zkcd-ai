@@ -92,6 +92,14 @@ private fun groupItems(items: List<ContentItem>): Map<TimeGroup, List<ContentIte
     }
 }
 
+/** 判断两个时间戳是否在同一天 */
+private fun isSameDay(millis1: Long, millis2: Long): Boolean {
+    val cal1 = Calendar.getInstance().apply { timeInMillis = millis1 }
+    val cal2 = Calendar.getInstance().apply { timeInMillis = millis2 }
+    return cal1.get(Calendar.YEAR) == cal2.get(Calendar.YEAR) &&
+           cal1.get(Calendar.DAY_OF_YEAR) == cal2.get(Calendar.DAY_OF_YEAR)
+}
+
 // ==================== 展平列表模型 ====================
 
 private sealed class FlatItem(val key: String) {
@@ -101,6 +109,7 @@ private sealed class FlatItem(val key: String) {
 
 // ==================== 历史页 ====================
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HistoryScreen(
     onNavigateToDetail: (Long) -> Unit
@@ -114,14 +123,39 @@ fun HistoryScreen(
 
     var searchQuery by remember { mutableStateOf("") }
     var selectedTab by remember { mutableStateOf<CreationType?>(null) }
+    var selectedDateMillis by remember { mutableStateOf<Long?>(null) }
+    var showDatePicker by remember { mutableStateOf(false) }
 
-    // 筛选
-    val filteredItems = remember(allItems, selectedTab, searchQuery) {
+    // 日期选择器
+    if (showDatePicker) {
+        val datePickerState = rememberDatePickerState(initialSelectedDateMillis = selectedDateMillis)
+        DatePickerDialog(
+            onDismissRequest = { showDatePicker = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    selectedDateMillis = datePickerState.selectedDateMillis
+                    showDatePicker = false
+                }) { Text("确定") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    selectedDateMillis = null
+                    showDatePicker = false
+                }) { Text("清除") }
+            }
+        ) {
+            DatePicker(state = datePickerState)
+        }
+    }
+
+    // 筛选（关键字 + 类型 + 日期）
+    val filteredItems = remember(allItems, selectedTab, searchQuery, selectedDateMillis) {
         allItems.filter { item ->
             (selectedTab == null || item.creationType == selectedTab) &&
             (searchQuery.isBlank() ||
                 item.title?.contains(searchQuery, ignoreCase = true) == true ||
-                item.content.contains(searchQuery, ignoreCase = true))
+                item.content.contains(searchQuery, ignoreCase = true)) &&
+            (selectedDateMillis == null || isSameDay(item.createdAt, selectedDateMillis!!))
         }
     }
 
@@ -140,7 +174,12 @@ fun HistoryScreen(
         HistoryHeader(itemCount = allItems.size)
 
         // ═══════════ 2. 搜索栏 ═══════════
-        SearchBar(query = searchQuery, onQueryChange = { searchQuery = it })
+        SearchBar(
+            query = searchQuery,
+            onQueryChange = { searchQuery = it },
+            hasDateFilter = selectedDateMillis != null,
+            onDateFilterClick = { showDatePicker = true }
+        )
 
         // ═══════════ 3. 分类 Tabs + 编辑按钮 ═══════════
         Row(
@@ -278,7 +317,7 @@ private fun HistoryHeader(itemCount: Int) {
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("📅", fontSize = 90.sp)
+                        Text("📅", fontSize = 85.sp)
                     }
                 }
             }
@@ -289,7 +328,12 @@ private fun HistoryHeader(itemCount: Int) {
 // ==================== 2. 搜索栏（复用收藏页样式）====================
 
 @Composable
-private fun SearchBar(query: String, onQueryChange: (String) -> Unit) {
+private fun SearchBar(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    hasDateFilter: Boolean = false,
+    onDateFilterClick: () -> Unit = {}
+) {
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -303,7 +347,7 @@ private fun SearchBar(query: String, onQueryChange: (String) -> Unit) {
             modifier = Modifier
                 .fillMaxWidth()
                 .height(52.dp)
-                .padding(horizontal = 16.dp),
+                .padding(start = 16.dp, end = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(Icons.Default.Search, "搜索", tint = TextMuted, modifier = Modifier.size(20.dp))
@@ -325,10 +369,20 @@ private fun SearchBar(query: String, onQueryChange: (String) -> Unit) {
                 singleLine = true,
                 textStyle = MaterialTheme.typography.bodyMedium
             )
+            // 清除按钮
             if (query.isNotBlank()) {
                 IconButton(onClick = { onQueryChange("") }, modifier = Modifier.size(28.dp)) {
                     Icon(Icons.Default.Close, "清除", tint = TextMuted, modifier = Modifier.size(16.dp))
                 }
+            }
+            // 日期筛选按钮
+            IconButton(onClick = onDateFilterClick, modifier = Modifier.size(36.dp)) {
+                Icon(
+                    if (hasDateFilter) Icons.Default.DateRange else Icons.Outlined.DateRange,
+                    contentDescription = "按日期筛选",
+                    tint = if (hasDateFilter) Primary else TextMuted,
+                    modifier = Modifier.size(22.dp)
+                )
             }
         }
     }
